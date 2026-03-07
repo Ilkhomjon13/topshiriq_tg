@@ -167,7 +167,7 @@ async def start_handler(message: Message, state: FSMContext) -> None:
 
     text = (
         f"Assalomu alaykum, {user.full_name}.\n"
-        "@topibolindi topshiriqlar botiga xush kelibsiz.\n"
+        "Topshiriqlar botiga xush kelibsiz.\n"
         "Quyidagi bo'limlardan birini tanlang."
     )
     await message.answer(text, reply_markup=user_main_keyboard())
