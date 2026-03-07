@@ -149,6 +149,12 @@ async def task_view_handler(callback: CallbackQuery) -> None:
 
     async with SessionLocal() as db:
         task = await get_task_by_id(db, task_id)
+        user = None
+        joined = False
+        if callback.from_user:
+            user = await get_user_by_telegram_id(db, telegram_id=callback.from_user.id)
+        if user:
+            joined = await is_user_participant(db, task_id=task_id, user_id=user.id)
 
     if not task:
         await callback.answer("Topshiriq topilmadi.", show_alert=True)
@@ -162,10 +168,10 @@ async def task_view_handler(callback: CallbackQuery) -> None:
         await callback.message.answer_photo(
             photo=task.image_file_id,
             caption=text,
-            reply_markup=task_detail_inline(task_id),
+            reply_markup=task_detail_inline(task_id, is_joined=joined),
         )
     else:
-        await callback.message.answer(text, reply_markup=task_detail_inline(task_id))
+        await callback.message.answer(text, reply_markup=task_detail_inline(task_id, is_joined=joined))
     await callback.answer()
 
 
@@ -190,12 +196,31 @@ async def task_join_handler(callback: CallbackQuery) -> None:
             username=callback.from_user.username,
         )
         await join_task(db, task_id=task_id, user_id=user.id)
+        task = await get_task_by_id(db, task_id)
         await db.commit()
+
+    if callback.message:
+        short_description = ((task.description if task else "") or "").strip()
+        if len(short_description) > 180:
+            short_description = short_description[:180].rstrip() + "..."
+        view_text = f"{task.title if task else 'Topshiriq'}\n\n{short_description}"
+        try:
+            if task and task.image_file_id and callback.message.photo:
+                await callback.message.edit_caption(
+                    caption=view_text,
+                    reply_markup=task_detail_inline(task_id, is_joined=True),
+                )
+            else:
+                await callback.message.edit_text(
+                    text=view_text,
+                    reply_markup=task_detail_inline(task_id, is_joined=True),
+                )
+        except Exception:
+            await callback.message.answer(view_text, reply_markup=task_detail_inline(task_id, is_joined=True))
 
     await callback.message.answer(
         "Siz topshiriqqa qo'shildingiz.\n"
-        "Endi guruhga odam qo'shganingizda bot avtomatik hisoblaydi.\n"
-        "Hisobga olish sharti: qo'shilgan user guruhga muvaffaqiyatli qo'shilgan bo'lishi kerak."
+        "Endi guruhga odam qo'shganingizda bot avtomatik hisoblaydi."
     )
     await callback.answer("Qatnashish muvaffaqiyatli")
 

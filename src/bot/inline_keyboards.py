@@ -6,10 +6,11 @@ def task_list_inline(tasks: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def task_detail_inline(task_id: int) -> InlineKeyboardMarkup:
+def task_detail_inline(task_id: int, is_joined: bool = False) -> InlineKeyboardMarkup:
+    join_text = "✅ Siz qatnashyapsiz" if is_joined else "✅ Qatnashish"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Qatnashish", callback_data=f"task:join:{task_id}")],
+            [InlineKeyboardButton(text=join_text, callback_data=f"task:join:{task_id}")],
             [InlineKeyboardButton(text="ℹ️ Qoidalar", callback_data=f"task:rules:{task_id}")],
             [InlineKeyboardButton(text="🎁 Sovg'alar", callback_data=f"task:rewards:{task_id}")],
             [InlineKeyboardButton(text="📈 Progressim", callback_data=f"task:progress:{task_id}")],
