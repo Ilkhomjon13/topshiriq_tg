@@ -19,7 +19,6 @@ from src.services.certificate_service import (
     create_or_upgrade_certificate,
     get_best_level_for_count,
     get_user_certificates,
-    get_user_task_certificates,
     request_redemption,
 )
 from src.services.referral_service import (
@@ -150,21 +149,23 @@ async def task_view_handler(callback: CallbackQuery) -> None:
 
     async with SessionLocal() as db:
         task = await get_task_by_id(db, task_id)
-        levels = await get_task_levels(db, task_id)
 
     if not task:
         await callback.answer("Topshiriq topilmadi.", show_alert=True)
         return
 
-    level_lines = [f"{level.required_count} ta - {level.reward_name}" for level in levels]
-    text = (
-        f"{task.title}\n\n"
-        f"{task.description}\n\n"
-        f"Qoidalar: {task.rules_text}\n\n"
-        "Sovg'a bosqichlari:\n"
-        + ("\n".join(level_lines) if level_lines else "- Bosqichlar hali kiritilmagan")
-    )
-    await callback.message.answer(text, reply_markup=task_detail_inline(task_id))
+    short_description = (task.description or "").strip()
+    if len(short_description) > 180:
+        short_description = short_description[:180].rstrip() + "..."
+    text = f"{task.title}\n\n{short_description}"
+    if task.image_file_id:
+        await callback.message.answer_photo(
+            photo=task.image_file_id,
+            caption=text,
+            reply_markup=task_detail_inline(task_id),
+        )
+    else:
+        await callback.message.answer(text, reply_markup=task_detail_inline(task_id))
     await callback.answer()
 
 
@@ -236,37 +237,44 @@ async def task_progress_handler(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("task:gifts:"))
-async def task_gifts_handler(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("task:rules:"))
+async def task_rules_handler(callback: CallbackQuery) -> None:
     if not callback.data or not callback.from_user:
         return
 
     task_id = int(callback.data.split(":")[-1])
 
     async with SessionLocal() as db:
-        user = await get_user_by_telegram_id(db, telegram_id=callback.from_user.id)
-        if not user:
-            await callback.message.answer("Avval /start yuboring.")
-            await callback.answer()
-            return
+        task = await get_task_by_id(db, task_id)
 
-        certs = await get_user_task_certificates(db, user_id=user.id, task_id=task_id)
-
-    if not certs:
-        await callback.message.answer("Sizda bu topshiriq bo'yicha sertifikatlar yo'q.")
+    if not task:
+        await callback.message.answer("Topshiriq topilmadi.")
         await callback.answer()
         return
 
-    for cert, level in certs:
-        text = (
-            f"Sovg'a: {level.reward_name}\n"
-            f"Bosqich: {level.required_count} ta\n"
-            f"Sertifikat ID: {cert.id}\n"
-            f"Kod: {cert.certificate_code}\n"
-            f"Holat: {cert.status}"
-        )
-        markup = certificate_use_inline(cert.id) if cert.status == "available" else None
-        await callback.message.answer(text, reply_markup=markup)
+    await callback.message.answer(f"Qoidalar:\n{task.rules_text}")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("task:rewards:"))
+async def task_rewards_handler(callback: CallbackQuery) -> None:
+    if not callback.data:
+        return
+
+    task_id = int(callback.data.split(":")[-1])
+
+    async with SessionLocal() as db:
+        levels = await get_task_levels(db, task_id=task_id)
+
+    if not levels:
+        await callback.message.answer("Sovg'a bosqichlari hali kiritilmagan.")
+        await callback.answer()
+        return
+
+    lines = ["Sovg'a bosqichlari:"]
+    for level in levels:
+        lines.append(f"- {level.required_count} ta: {level.reward_name}")
+    await callback.message.answer("\n".join(lines))
 
     await callback.answer()
 

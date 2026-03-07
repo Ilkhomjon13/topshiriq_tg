@@ -28,6 +28,7 @@ class AddTaskState(StatesGroup):
     waiting_description = State()
     waiting_rules = State()
     waiting_group_link = State()
+    waiting_image = State()
 
 
 class BroadcastState(StatesGroup):
@@ -61,9 +62,12 @@ async def _get_admin_from_callback(callback: CallbackQuery) -> Admin | None:
 
 
 def _task_action_keyboard(task_id: int, is_active: bool) -> InlineKeyboardMarkup:
-    toggle_text = "⏸ Inactive qilish" if is_active else "▶️ Active qilish"
+    stop_text = "⏹ To'xtatish" if is_active else "▶️ Faollashtirish"
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=toggle_text, callback_data=f"admin:task_toggle:{task_id}")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=stop_text, callback_data=f"admin:task_stop:{task_id}")],
+            [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"admin:task_delete:{task_id}")],
+        ]
     )
 
 
@@ -145,8 +149,8 @@ async def tasks_list_handler(message: Message) -> None:
             )
 
 
-@router.callback_query(F.data.startswith("admin:task_toggle:"))
-async def task_toggle_handler(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("admin:task_stop:"))
+async def task_stop_handler(callback: CallbackQuery) -> None:
     admin = await _get_admin_from_callback(callback)
     if not admin or not callback.data:
         return
@@ -162,6 +166,36 @@ async def task_toggle_handler(callback: CallbackQuery) -> None:
         await db.commit()
 
     await callback.message.answer(f"Task #{task_id} status -> {task.status}")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:task_delete:"))
+async def task_delete_handler(callback: CallbackQuery) -> None:
+    admin = await _get_admin_from_callback(callback)
+    if not admin or not callback.data:
+        return
+
+    task_id = int(callback.data.split(":")[-1])
+    async with SessionLocal() as db:
+        task = await db.get(Task, task_id)
+        if not task:
+            await callback.answer("Topshiriq topilmadi", show_alert=True)
+            return
+        # soft delete to keep referral/certificate history intact
+        task.status = TaskStatus.ARCHIVED.value
+        db.add(
+            AuditLog(
+                actor_type="admin",
+                actor_id=admin.id,
+                action="task_archived",
+                entity_type="task",
+                entity_id=task.id,
+                payload_json={},
+            )
+        )
+        await db.commit()
+
+    await callback.message.answer(f"Task #{task_id} o'chirildi (archived).")
     await callback.answer()
 
 
@@ -197,22 +231,36 @@ async def add_task_rules(message: Message, state: FSMContext) -> None:
 
 @router.message(AddTaskState.waiting_group_link)
 async def add_task_group_link(message: Message, state: FSMContext) -> None:
+    group_link = (message.text or "").strip()
+    if group_link == "-":
+        group_link = None
+    await state.update_data(group_link=group_link)
+    await state.set_state(AddTaskState.waiting_image)
+    await message.answer("Topshiriq rasmi yuboring yoki '-' deb yozing:")
+
+
+@router.message(AddTaskState.waiting_image)
+async def add_task_image(message: Message, state: FSMContext) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
         await state.clear()
         return
 
     data = await state.get_data()
-    group_link = (message.text or "").strip()
-    if group_link == "-":
-        group_link = None
+    image_file_id = None
+    if message.photo:
+        image_file_id = message.photo[-1].file_id
+    elif (message.text or "").strip() != "-":
+        await message.answer("Rasm yuboring yoki '-' deb yozing.")
+        return
 
     async with SessionLocal() as db:
         task = Task(
             title=data.get("title", "Yangi topshiriq"),
             description=data.get("description", ""),
             rules_text=data.get("rules_text", ""),
-            group_link=group_link,
+            group_link=data.get("group_link"),
+            image_file_id=image_file_id,
             status=TaskStatus.ACTIVE.value,
         )
         db.add(task)

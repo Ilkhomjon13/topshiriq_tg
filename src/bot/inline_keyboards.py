@@ -10,8 +10,9 @@ def task_detail_inline(task_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Qatnashish", callback_data=f"task:join:{task_id}")],
+            [InlineKeyboardButton(text="ℹ️ Qoidalar", callback_data=f"task:rules:{task_id}")],
+            [InlineKeyboardButton(text="🎁 Sovg'alar", callback_data=f"task:rewards:{task_id}")],
             [InlineKeyboardButton(text="📈 Progressim", callback_data=f"task:progress:{task_id}")],
-            [InlineKeyboardButton(text="🏆 Sovg'alarni ko'rish", callback_data=f"task:gifts:{task_id}")],
             [InlineKeyboardButton(text="🔙 Orqaga", callback_data="task:back")],
         ]
     )
