@@ -45,7 +45,10 @@ class BroadcastState(StatesGroup):
 
 
 class RewardManageState(StatesGroup):
-    waiting_payload = State()
+    waiting_required_count = State()
+    waiting_reward_name = State()
+    waiting_reward_description = State()
+    waiting_reward_image = State()
 
 
 async def _get_admin_or_reject(message: Message) -> Admin | None:
@@ -450,14 +453,9 @@ async def reward_add_start_handler(callback: CallbackQuery, state: FSMContext) -
         return
 
     task_id = int(callback.data.split(":")[-1])
-    await state.set_state(RewardManageState.waiting_payload)
+    await state.set_state(RewardManageState.waiting_required_count)
     await state.update_data(action="add", task_id=task_id)
-    await callback.message.answer(
-        "Yangi bosqich formati:\n"
-        "`required_count|reward_name|reward_description`\n"
-        "Misol: `300|Mikser|300 ta referal uchun`",
-        parse_mode="Markdown",
-    )
+    await callback.message.answer("Kerakli odam sonini kiriting (masalan: 300):")
     await callback.answer()
 
 
@@ -468,34 +466,68 @@ async def reward_edit_start_handler(callback: CallbackQuery, state: FSMContext) 
         return
 
     level_id = int(callback.data.split(":")[-1])
-    await state.set_state(RewardManageState.waiting_payload)
+    await state.set_state(RewardManageState.waiting_required_count)
     await state.update_data(action="edit", level_id=level_id)
-    await callback.message.answer(
-        "Tahrirlash formati:\n"
-        "`required_count|reward_name|reward_description`\n"
-        "Misol: `100|Termos Premium|Yangilangan tavsif`",
-        parse_mode="Markdown",
-    )
+    await callback.message.answer("Yangi kerakli odam sonini kiriting (masalan: 100):")
     await callback.answer()
 
 
-@router.message(RewardManageState.waiting_payload)
-async def reward_payload_handler(message: Message, state: FSMContext) -> None:
+@router.message(RewardManageState.waiting_required_count)
+async def reward_required_count_handler(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("Faqat son kiriting. Masalan: 100")
+        return
+    await state.update_data(required_count=int(text))
+    await state.set_state(RewardManageState.waiting_reward_name)
+    await message.answer("Sovg'a nomini kiriting:")
+
+
+@router.message(RewardManageState.waiting_reward_name)
+async def reward_name_handler(message: Message, state: FSMContext) -> None:
+    reward_name = (message.text or "").strip()
+    if not reward_name:
+        await message.answer("Sovg'a nomi bo'sh bo'lmasin.")
+        return
+    await state.update_data(reward_name=reward_name)
+    await state.set_state(RewardManageState.waiting_reward_description)
+    await message.answer("Sovg'a tavsifini kiriting:")
+
+
+@router.message(RewardManageState.waiting_reward_description)
+async def reward_description_handler(message: Message, state: FSMContext) -> None:
+    reward_description = (message.text or "").strip()
+    if not reward_description:
+        await message.answer("Tavsif bo'sh bo'lmasin.")
+        return
+    await state.update_data(reward_description=reward_description)
+    await state.set_state(RewardManageState.waiting_reward_image)
+    await message.answer("Sovg'a rasmini yuboring yoki '-' deb yozing:")
+
+
+@router.message(RewardManageState.waiting_reward_image)
+async def reward_image_handler(message: Message, state: FSMContext) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
         await state.clear()
         return
 
-    payload = (message.text or "").strip()
-    parts = [x.strip() for x in payload.split("|")]
-    if len(parts) != 3 or not parts[0].isdigit():
-        await message.answer("Format xato. To'g'ri format: `required_count|reward_name|reward_description`", parse_mode="Markdown")
+    image_file_id = None
+    if message.photo:
+        image_file_id = message.photo[-1].file_id
+    elif (message.text or "").strip() != "-":
+        await message.answer("Rasm yuboring yoki '-' deb yozing.")
         return
 
-    required_count = int(parts[0])
-    reward_name = parts[1]
-    reward_description = parts[2]
     data = await state.get_data()
+    required_count = int(data.get("required_count", 0))
+    reward_name = str(data.get("reward_name", "")).strip()
+    reward_description = str(data.get("reward_description", "")).strip()
+    if required_count <= 0 or not reward_name or not reward_description:
+        await message.answer("Ma'lumotlar to'liq emas. Qaytadan boshlang.")
+        await state.clear()
+        return
+
     action = data.get("action")
 
     async with SessionLocal() as db:
@@ -514,6 +546,7 @@ async def reward_payload_handler(message: Message, state: FSMContext) -> None:
                 required_count=required_count,
                 reward_name=reward_name,
                 reward_description=reward_description,
+                reward_image_file_id=image_file_id,
                 certificate_text=f"{required_count} bosqich sertifikati",
                 validity_days=30,
                 is_active=True,
@@ -542,6 +575,8 @@ async def reward_payload_handler(message: Message, state: FSMContext) -> None:
             level.required_count = required_count
             level.reward_name = reward_name
             level.reward_description = reward_description
+            if image_file_id:
+                level.reward_image_file_id = image_file_id
             db.add(
                 AuditLog(
                     actor_type="admin",
