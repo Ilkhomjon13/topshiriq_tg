@@ -1,5 +1,5 @@
 ﻿from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -17,6 +17,15 @@ from src.services.stats_service import collect_dashboard_stats
 
 router = Router(name="admin")
 settings = get_settings()
+
+
+class IsAdminFilter(Filter):
+    async def __call__(self, message: Message) -> bool:
+        if not message.from_user:
+            return False
+        async with SessionLocal() as db:
+            admin = await get_active_admin(db, telegram_id=message.from_user.id)
+        return admin is not None
 
 
 class RejectState(StatesGroup):
@@ -83,7 +92,7 @@ async def admin_start_handler(message: Message) -> None:
     await message.answer(f"Admin menyu ({admin.role})", reply_markup=admin_main_keyboard())
 
 
-@router.message(Command("block_user"))
+@router.message(IsAdminFilter(), Command("block_user"))
 async def block_user_cmd(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -107,7 +116,7 @@ async def block_user_cmd(message: Message) -> None:
     await message.answer(f"User bloklandi: {tg_id}")
 
 
-@router.message(Command("unblock_user"))
+@router.message(IsAdminFilter(), Command("unblock_user"))
 async def unblock_user_cmd(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -131,7 +140,7 @@ async def unblock_user_cmd(message: Message) -> None:
     await message.answer(f"User blokdan ochildi: {tg_id}")
 
 
-@router.message(Command("task_stop"))
+@router.message(IsAdminFilter(), Command("task_stop"))
 async def task_stop_cmd(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -163,7 +172,7 @@ async def task_stop_cmd(message: Message) -> None:
     await message.answer(f"Task #{task_id} status -> {task.status}")
 
 
-@router.message(Command("task_delete"))
+@router.message(IsAdminFilter(), Command("task_delete"))
 async def task_delete_cmd(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -195,7 +204,7 @@ async def task_delete_cmd(message: Message) -> None:
     await message.answer(f"Task #{task_id} o'chirildi (archived).")
 
 
-@router.message(F.text == "📋 Topshiriqlar")
+@router.message(IsAdminFilter(), F.text == "📋 Topshiriqlar")
 async def tasks_list_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -274,7 +283,7 @@ async def task_delete_handler(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.message(F.text == "➕ Topshiriq qo'shish")
+@router.message(IsAdminFilter(), F.text == "➕ Topshiriq qo'shish")
 async def add_task_start(message: Message, state: FSMContext) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -378,7 +387,7 @@ async def add_task_image(message: Message, state: FSMContext) -> None:
     await message.answer(f"Topshiriq yaratildi: #{task.id} {task.title}\nDefault sovg'a bosqichlari (50/100/200) qo'shildi.")
 
 
-@router.message(F.text == "🎁 Sovg'alar")
+@router.message(IsAdminFilter(), F.text == "🎁 Sovg'alar")
 async def rewards_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -620,7 +629,7 @@ async def reward_delete_handler(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.message(F.text == "👥 Foydalanuvchilar")
+@router.message(IsAdminFilter(), F.text == "👥 Foydalanuvchilar")
 async def users_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -643,7 +652,7 @@ async def users_handler(message: Message) -> None:
         )
 
 
-@router.message(F.text == "📢 Xabarnoma")
+@router.message(IsAdminFilter(), F.text == "📢 Xabarnoma")
 async def broadcast_start(message: Message, state: FSMContext) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -680,7 +689,7 @@ async def broadcast_send(message: Message, state: FSMContext) -> None:
     await message.answer(f"Xabarnoma yakunlandi. Yuborildi: {sent}, xato: {failed}")
 
 
-@router.message(F.text == "⚙️ Sozlamalar")
+@router.message(IsAdminFilter(), F.text == "⚙️ Sozlamalar")
 async def settings_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -694,7 +703,7 @@ async def settings_handler(message: Message) -> None:
     )
 
 
-@router.message(F.text == "🧾 Loglar")
+@router.message(IsAdminFilter(), F.text == "🧾 Loglar")
 async def logs_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -714,7 +723,7 @@ async def logs_handler(message: Message) -> None:
         )
 
 
-@router.message(F.text == "⏳ So'rovlar")
+@router.message(IsAdminFilter(), F.text == "⏳ So'rovlar")
 async def pending_requests_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
@@ -820,7 +829,7 @@ async def reject_reason_handler(message: Message, state: FSMContext) -> None:
         await message.answer("Rad etish amalga oshmadi.")
 
 
-@router.message(F.text == "📊 Statistika")
+@router.message(IsAdminFilter(), F.text == "📊 Statistika")
 async def stats_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
     if not admin:
