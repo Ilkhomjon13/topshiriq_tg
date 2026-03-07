@@ -1,12 +1,24 @@
-﻿from datetime import datetime
+﻿from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.enums import CertificateStatus, PromoCodeStatus
-from src.db.models import Certificate, PromoCode, RedemptionRequest, RewardLevel
+from src.db.models import Certificate, PromoCode, RedemptionRequest, RewardLevel, User
 from src.services.audit_service import write_log
 from src.utils.codes import build_promo_code
+
+
+@dataclass
+class PendingRequestView:
+    request_id: int
+    certificate_id: int
+    created_at: datetime
+    user_full_name: str | None
+    user_telegram_id: int | None
+    reward_name: str | None
+    reward_required_count: int | None
 
 
 async def _generate_unique_promo(db: AsyncSession, level_required_count: int) -> str:
@@ -22,6 +34,41 @@ async def list_pending_requests(db: AsyncSession) -> list[RedemptionRequest]:
         select(RedemptionRequest).where(RedemptionRequest.status == CertificateStatus.PENDING.value).order_by(RedemptionRequest.id.asc())
     )
     return list(result)
+
+
+async def list_pending_requests_view(db: AsyncSession, limit: int = 20) -> list[PendingRequestView]:
+    rows = (
+        await db.execute(
+            select(
+                RedemptionRequest.id,
+                RedemptionRequest.certificate_id,
+                RedemptionRequest.created_at,
+                User.full_name,
+                User.telegram_id,
+                RewardLevel.reward_name,
+                RewardLevel.required_count,
+            )
+            .join(Certificate, Certificate.id == RedemptionRequest.certificate_id)
+            .join(User, User.id == Certificate.user_id)
+            .join(RewardLevel, RewardLevel.id == Certificate.reward_level_id)
+            .where(RedemptionRequest.status == CertificateStatus.PENDING.value)
+            .order_by(RedemptionRequest.id.asc())
+            .limit(limit)
+        )
+    ).all()
+
+    return [
+        PendingRequestView(
+            request_id=row[0],
+            certificate_id=row[1],
+            created_at=row[2],
+            user_full_name=row[3],
+            user_telegram_id=row[4],
+            reward_name=row[5],
+            reward_required_count=row[6],
+        )
+        for row in rows
+    ]
 
 
 async def approve_certificate(db: AsyncSession, certificate_id: int, admin_id: int, shop_id: int | None) -> PromoCode | None:

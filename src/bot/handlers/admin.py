@@ -11,7 +11,7 @@ from src.core.config import get_settings
 from src.core.enums import TaskStatus
 from src.db.models import Admin, AuditLog, Certificate, RewardLevel, Task, User
 from src.db.session import SessionLocal
-from src.services.admin_service import approve_certificate, list_pending_requests, reject_certificate
+from src.services.admin_service import approve_certificate, list_pending_requests_view, reject_certificate
 from src.services.auth_service import get_active_admin
 from src.services.stats_service import collect_dashboard_stats
 
@@ -25,6 +25,8 @@ class IsAdminFilter(Filter):
             return False
         async with SessionLocal() as db:
             admin = await get_active_admin(db, telegram_id=message.from_user.id)
+        if admin is not None:
+            setattr(message, "_admin_cached", admin)
         return admin is not None
 
 
@@ -54,6 +56,9 @@ class RewardManageState(StatesGroup):
 async def _get_admin_or_reject(message: Message) -> Admin | None:
     if not message.from_user:
         return None
+    cached_admin = getattr(message, "_admin_cached", None)
+    if cached_admin is not None:
+        return cached_admin
 
     async with SessionLocal() as db:
         admin = await get_active_admin(db, telegram_id=message.from_user.id)
@@ -765,28 +770,21 @@ async def pending_requests_handler(message: Message) -> None:
         return
 
     async with SessionLocal() as db:
-        pending = await list_pending_requests(db)
+        pending = await list_pending_requests_view(db, limit=20)
         if not pending:
             await message.answer("Pending so'rovlar mavjud emas.")
             return
 
-        for req in pending[:20]:
-            cert = await db.get(Certificate, req.certificate_id)
-            if not cert:
-                continue
-            user = await db.get(User, cert.user_id)
-            level = await db.get(RewardLevel, cert.reward_level_id)
-            level_name = level.reward_name if level else "Noma'lum"
-            level_count = level.required_count if level else 0
+        for req in pending:
             await message.answer(
-                f"So'rov #{req.id}\n"
-                f"User: {user.full_name if user else cert.user_id}\n"
-                f"Telegram ID: {user.telegram_id if user else '-'}\n"
-                f"Sovg'a: {level_name}\n"
-                f"Bosqich: {level_count}\n"
-                f"Sertifikat ID: {cert.id}\n"
+                f"So'rov #{req.request_id}\n"
+                f"User: {req.user_full_name or 'Nomalum'}\n"
+                f"Telegram ID: {req.user_telegram_id or '-'}\n"
+                f"Sovg'a: {req.reward_name or 'Nomalum'}\n"
+                f"Bosqich: {req.reward_required_count or 0}\n"
+                f"Sertifikat ID: {req.certificate_id}\n"
                 f"Yuborilgan vaqt: {req.created_at}",
-                reply_markup=pending_request_inline(cert.id),
+                reply_markup=pending_request_inline(req.certificate_id),
             )
 
 
