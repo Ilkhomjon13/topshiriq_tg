@@ -1,18 +1,20 @@
-﻿from aiogram import F, Router
+﻿import re
+
+from aiogram import F, Router
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import Message
 
-from src.bot.inline_keyboards import (
-    certificate_use_inline,
-    confirm_use_inline,
-    task_detail_inline,
-    task_list_inline,
+from src.bot.keyboards import (
+    user_certificates_keyboard,
+    user_confirm_keyboard,
+    user_main_keyboard,
+    user_task_actions_keyboard,
+    user_tasks_keyboard,
 )
-from src.bot.keyboards import user_main_keyboard
 from src.core.config import get_settings
 from src.db.session import SessionLocal
 from src.services.certificate_service import (
@@ -44,8 +46,11 @@ router = Router(name="user")
 settings = get_settings()
 
 
-class UseCertificateState(StatesGroup):
-    waiting_confirm = State()
+class UserFlowState(StatesGroup):
+    selecting_task = State()
+    task_actions = State()
+    choosing_certificate = State()
+    confirm_certificate = State()
 
 
 def _extract_start_param(message: Message) -> str | None:
@@ -75,11 +80,51 @@ async def _is_member_of_target_group(message: Message) -> bool:
     }
 
 
+def _task_id_from_button(text: str) -> int | None:
+    # button format: "📌 {id}. title"
+    match = re.match(r"^📌\s+(\d+)\.", text.strip())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _cert_id_from_button(text: str) -> int | None:
+    # button format: "🎁 Foydalanish #{id}"
+    match = re.match(r"^🎁\s+Foydalanish\s+#(\d+)$", text.strip())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+async def _send_task_card(message: Message, task_id: int, user_id: int) -> None:
+    async with SessionLocal() as db:
+        task = await get_task_by_id(db, task_id)
+        if not task:
+            await message.answer("Topshiriq topilmadi.", reply_markup=user_main_keyboard())
+            return
+        joined = await is_user_participant(db, task_id=task_id, user_id=user_id)
+
+    short_description = (task.description or "").strip()
+    if len(short_description) > 220:
+        short_description = short_description[:217].rstrip() + "..."
+    text = f"{task.title}\n\n{short_description}"
+
+    if task.image_file_id:
+        await message.answer_photo(
+            photo=task.image_file_id,
+            caption=text,
+            reply_markup=user_task_actions_keyboard(is_joined=joined),
+        )
+    else:
+        await message.answer(text, reply_markup=user_task_actions_keyboard(is_joined=joined))
+
+
 @router.message(CommandStart())
-async def start_handler(message: Message) -> None:
+async def start_handler(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
 
+    await state.clear()
     start_param = _extract_start_param(message)
 
     async with SessionLocal() as db:
@@ -101,7 +146,6 @@ async def start_handler(message: Message) -> None:
                     source_code=start_param,
                 )
 
-        # Group tracking flow: count when invited user starts bot and is member in target group.
         if await _is_member_of_target_group(message):
             pendings = await list_pending_referrals_for_invited(db, invited_user_id=user.id)
             for referral in pendings:
@@ -129,119 +173,103 @@ async def start_handler(message: Message) -> None:
 
 
 @router.message(F.text == "📋 Topshiriqlar")
-async def tasks_handler(message: Message) -> None:
+async def tasks_handler(message: Message, state: FSMContext) -> None:
     async with SessionLocal() as db:
         tasks = await list_active_tasks(db)
 
     if not tasks:
-        await message.answer("Hozircha aktiv topshiriqlar mavjud emas.")
+        await message.answer("Hozircha aktiv topshiriqlar mavjud emas.", reply_markup=user_main_keyboard())
         return
 
-    kb = task_list_inline([(task.id, task.title) for task in tasks])
-    await message.answer("Aktiv topshiriqlardan birini tanlang:", reply_markup=kb)
+    await state.set_state(UserFlowState.selecting_task)
+    await message.answer(
+        "Aktiv topshiriqlardan birini tanlang:",
+        reply_markup=user_tasks_keyboard([(task.id, task.title) for task in tasks]),
+    )
 
 
-@router.callback_query(F.data.startswith("task:view:"))
-async def task_view_handler(callback: CallbackQuery) -> None:
-    if not callback.data:
+@router.message(UserFlowState.selecting_task)
+async def select_task_handler(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == "🔙 Orqaga":
+        await state.clear()
+        await message.answer("Asosiy menyu", reply_markup=user_main_keyboard())
         return
-    task_id = int(callback.data.split(":")[-1])
+
+    task_id = _task_id_from_button(text)
+    if not task_id or not message.from_user:
+        await message.answer("Topshiriqni tugmadan tanlang.")
+        return
 
     async with SessionLocal() as db:
-        task = await get_task_by_id(db, task_id)
-        user = None
-        joined = False
-        if callback.from_user:
-            user = await get_user_by_telegram_id(db, telegram_id=callback.from_user.id)
-        if user:
-            joined = await is_user_participant(db, task_id=task_id, user_id=user.id)
+        user = await get_user_by_telegram_id(db, telegram_id=message.from_user.id)
 
-    if not task:
-        await callback.answer("Topshiriq topilmadi.", show_alert=True)
+    if not user:
+        await message.answer("Avval /start yuboring.", reply_markup=user_main_keyboard())
+        await state.clear()
         return
 
-    short_description = (task.description or "").strip()
-    if len(short_description) > 180:
-        short_description = short_description[:180].rstrip() + "..."
-    text = f"{task.title}\n\n{short_description}"
-    if task.image_file_id:
-        await callback.message.answer_photo(
-            photo=task.image_file_id,
-            caption=text,
-            reply_markup=task_detail_inline(task_id, is_joined=joined),
-        )
-    else:
-        await callback.message.answer(text, reply_markup=task_detail_inline(task_id, is_joined=joined))
-    await callback.answer()
+    await state.set_state(UserFlowState.task_actions)
+    await state.update_data(task_id=task_id)
+    await _send_task_card(message, task_id=task_id, user_id=user.id)
 
 
-@router.callback_query(F.data == "task:back")
-async def task_back_handler(callback: CallbackQuery) -> None:
-    await callback.message.answer("Asosiy menyu", reply_markup=user_main_keyboard())
-    await callback.answer()
+@router.message(UserFlowState.task_actions, F.text == "🔙 Orqaga")
+async def task_actions_back_handler(message: Message, state: FSMContext) -> None:
+    async with SessionLocal() as db:
+        tasks = await list_active_tasks(db)
+
+    await state.set_state(UserFlowState.selecting_task)
+    await message.answer(
+        "Topshiriqlar ro'yxati:",
+        reply_markup=user_tasks_keyboard([(task.id, task.title) for task in tasks]),
+    )
 
 
-@router.callback_query(F.data.startswith("task:join:"))
-async def task_join_handler(callback: CallbackQuery) -> None:
-    if not callback.data or not callback.from_user:
+@router.message(UserFlowState.task_actions, F.text.in_({"✅ Qatnashish", "✅ Siz qatnashyapsiz"}))
+async def task_join_handler(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
         return
 
-    task_id = int(callback.data.split(":")[-1])
+    data = await state.get_data()
+    task_id = int(data.get("task_id", 0))
+    if task_id <= 0:
+        await message.answer("Topshiriq tanlanmagan.")
+        return
 
     async with SessionLocal() as db:
         user = await get_or_create_user(
             db,
-            telegram_id=callback.from_user.id,
-            full_name=callback.from_user.full_name,
-            username=callback.from_user.username,
+            telegram_id=message.from_user.id,
+            full_name=message.from_user.full_name,
+            username=message.from_user.username,
         )
         await join_task(db, task_id=task_id, user_id=user.id)
-        task = await get_task_by_id(db, task_id)
         await db.commit()
 
-    if callback.message:
-        short_description = ((task.description if task else "") or "").strip()
-        if len(short_description) > 180:
-            short_description = short_description[:180].rstrip() + "..."
-        view_text = f"{task.title if task else 'Topshiriq'}\n\n{short_description}"
-        try:
-            if task and task.image_file_id and callback.message.photo:
-                await callback.message.edit_caption(
-                    caption=view_text,
-                    reply_markup=task_detail_inline(task_id, is_joined=True),
-                )
-            else:
-                await callback.message.edit_text(
-                    text=view_text,
-                    reply_markup=task_detail_inline(task_id, is_joined=True),
-                )
-        except Exception:
-            await callback.message.answer(view_text, reply_markup=task_detail_inline(task_id, is_joined=True))
-
-    await callback.message.answer(
-        "Siz topshiriqqa qo'shildingiz.\n"
-        "Endi guruhga odam qo'shganingizda bot avtomatik hisoblaydi."
-    )
-    await callback.answer("Qatnashish muvaffaqiyatli")
+    await _send_task_card(message, task_id=task_id, user_id=user.id)
+    await message.answer("Siz topshiriqda qatnashyapsiz.")
 
 
-@router.callback_query(F.data.startswith("task:progress:"))
-async def task_progress_handler(callback: CallbackQuery) -> None:
-    if not callback.data or not callback.from_user:
+@router.message(UserFlowState.task_actions, F.text == "📈 Progressim")
+async def task_progress_handler(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
         return
 
-    task_id = int(callback.data.split(":")[-1])
+    data = await state.get_data()
+    task_id = int(data.get("task_id", 0))
+    if task_id <= 0:
+        await message.answer("Topshiriq tanlanmagan.")
+        return
 
     async with SessionLocal() as db:
-        user = await get_user_by_telegram_id(db, telegram_id=callback.from_user.id)
+        user = await get_user_by_telegram_id(db, telegram_id=message.from_user.id)
         if not user:
-            await callback.message.answer("Avval /start yuboring.")
-            await callback.answer()
+            await message.answer("Avval /start yuboring.")
             return
 
         if not await is_user_participant(db, task_id=task_id, user_id=user.id):
-            await callback.message.answer("Avval ushbu topshiriqqa qatnashing.")
-            await callback.answer()
+            await message.answer("Avval ushbu topshiriqqa qatnashing.")
             return
 
         current_count = await get_task_referral_count(db, task_id=task_id, inviter_user_id=user.id)
@@ -258,101 +286,46 @@ async def task_progress_handler(callback: CallbackQuery) -> None:
     else:
         msg = f"Siz {current_count} ta odam taklif qilgansiz. Siz eng yuqori bosqichdasiz."
 
-    await callback.message.answer(msg)
-    await callback.answer()
+    await message.answer(msg)
 
 
-@router.callback_query(F.data.startswith("task:rules:"))
-async def task_rules_handler(callback: CallbackQuery) -> None:
-    if not callback.data or not callback.from_user:
+@router.message(UserFlowState.task_actions, F.text == "ℹ️ Qoidalar")
+async def task_rules_handler(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id = int(data.get("task_id", 0))
+    if task_id <= 0:
+        await message.answer("Topshiriq tanlanmagan.")
         return
-
-    task_id = int(callback.data.split(":")[-1])
 
     async with SessionLocal() as db:
         task = await get_task_by_id(db, task_id)
 
     if not task:
-        await callback.message.answer("Topshiriq topilmadi.")
-        await callback.answer()
+        await message.answer("Topshiriq topilmadi.")
         return
 
-    await callback.message.answer(f"Qoidalar:\n{task.rules_text}")
-    await callback.answer()
+    await message.answer(f"Qoidalar:\n{task.rules_text}")
 
 
-@router.callback_query(F.data.startswith("task:rewards:"))
-async def task_rewards_handler(callback: CallbackQuery) -> None:
-    if not callback.data:
+@router.message(UserFlowState.task_actions, F.text == "🎁 Sovg'alar")
+async def task_rewards_handler(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id = int(data.get("task_id", 0))
+    if task_id <= 0:
+        await message.answer("Topshiriq tanlanmagan.")
         return
-
-    task_id = int(callback.data.split(":")[-1])
 
     async with SessionLocal() as db:
         levels = await get_task_levels(db, task_id=task_id)
 
     if not levels:
-        await callback.message.answer("Sovg'a bosqichlari hali kiritilmagan.")
-        await callback.answer()
+        await message.answer("Sovg'a bosqichlari hali kiritilmagan.")
         return
 
     lines = ["Sovg'a bosqichlari:"]
     for level in levels:
         lines.append(f"- {level.required_count} ta: {level.reward_name}")
-    await callback.message.answer("\n".join(lines))
-
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("cert:use:"))
-async def certificate_use_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    if not callback.data:
-        return
-    cert_id = int(callback.data.split(":")[-1])
-    await state.set_state(UseCertificateState.waiting_confirm)
-    await state.update_data(certificate_id=cert_id)
-    await callback.message.answer(
-        "Siz ushbu sertifikatdan foydalanish uchun so'rov yubormoqchisiz.\n"
-        "Admin tasdiqlagach sovg'ani olish uchun manzil, telefon va promo kod yuboriladi.",
-        reply_markup=confirm_use_inline(),
-    )
-    await callback.answer()
-
-
-@router.callback_query(UseCertificateState.waiting_confirm, F.data == "cert:cancel")
-async def cert_confirm_cancel_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.message.answer("So'rov bekor qilindi.")
-    await callback.answer()
-
-
-@router.callback_query(UseCertificateState.waiting_confirm, F.data == "cert:confirm")
-async def cert_confirm_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    if not callback.from_user:
-        return
-
-    data = await state.get_data()
-    cert_id = int(data.get("certificate_id", 0))
-    ok = False
-
-    async with SessionLocal() as db:
-        user = await get_user_by_telegram_id(db, telegram_id=callback.from_user.id)
-        if not user:
-            await callback.message.answer("Avval /start yuboring.")
-            await callback.answer()
-            await state.clear()
-            return
-
-        ok = await request_redemption(db, certificate_id=cert_id, user_id=user.id)
-        if ok:
-            await db.commit()
-
-    await state.clear()
-    if ok:
-        await callback.message.answer("So'rovingiz adminga yuborildi. Iltimos, tasdiqlanishini kuting.")
-    else:
-        await callback.message.answer("So'rov yuborilmadi. Sertifikat holatini tekshiring.")
-    await callback.answer()
+    await message.answer("\n".join(lines))
 
 
 @router.message(F.text == "📊 Mening natijam")
@@ -381,11 +354,11 @@ async def result_handler(message: Message) -> None:
             else:
                 lines.append(f"{task.title}: {count} ta, maksimal bosqichga yetgansiz")
 
-    await message.answer("\n".join(lines))
+    await message.answer("\n".join(lines), reply_markup=user_main_keyboard())
 
 
 @router.message(F.text == "🏆 Mening sovg'alarim")
-async def gifts_handler(message: Message) -> None:
+async def gifts_handler(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
 
@@ -398,13 +371,79 @@ async def gifts_handler(message: Message) -> None:
         certs = await get_user_certificates(db, user_id=user.id)
 
     if not certs:
-        await message.answer("Sizda sertifikatlar mavjud emas.")
+        await message.answer("Sizda sertifikatlar mavjud emas.", reply_markup=user_main_keyboard())
         return
 
+    available_ids: list[int] = []
     for cert in certs:
-        text = f"ID: {cert.id}\nKod: {cert.certificate_code}\nHolat: {cert.status}"
-        markup = certificate_use_inline(cert.id) if cert.status == "available" else None
-        await message.answer(text, reply_markup=markup)
+        await message.answer(f"ID: {cert.id}\nKod: {cert.certificate_code}\nHolat: {cert.status}")
+        if cert.status == "available":
+            available_ids.append(cert.id)
+
+    if available_ids:
+        await state.set_state(UserFlowState.choosing_certificate)
+        await message.answer(
+            "Foydalanish uchun sertifikat tanlang:",
+            reply_markup=user_certificates_keyboard(available_ids),
+        )
+    else:
+        await state.clear()
+        await message.answer("Aktiv sertifikat yo'q.", reply_markup=user_main_keyboard())
+
+
+@router.message(UserFlowState.choosing_certificate)
+async def choose_certificate_handler(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == "🔙 Orqaga":
+        await state.clear()
+        await message.answer("Asosiy menyu", reply_markup=user_main_keyboard())
+        return
+
+    cert_id = _cert_id_from_button(text)
+    if not cert_id:
+        await message.answer("Sertifikatni tugmadan tanlang.")
+        return
+
+    await state.set_state(UserFlowState.confirm_certificate)
+    await state.update_data(certificate_id=cert_id)
+    await message.answer(
+        "Siz ushbu sertifikatdan foydalanish uchun so'rov yubormoqchisiz.\n"
+        "Admin tasdiqlagach sovg'ani olish uchun ma'lumot yuboriladi.",
+        reply_markup=user_confirm_keyboard(),
+    )
+
+
+@router.message(UserFlowState.confirm_certificate, F.text.in_({"❌ Bekor qilish", "🔙 Orqaga"}))
+async def cert_confirm_cancel_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("So'rov bekor qilindi.", reply_markup=user_main_keyboard())
+
+
+@router.message(UserFlowState.confirm_certificate, F.text == "✅ Tasdiqlayman")
+async def cert_confirm_handler(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+
+    data = await state.get_data()
+    cert_id = int(data.get("certificate_id", 0))
+    ok = False
+
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, telegram_id=message.from_user.id)
+        if not user:
+            await message.answer("Avval /start yuboring.")
+            await state.clear()
+            return
+
+        ok = await request_redemption(db, certificate_id=cert_id, user_id=user.id)
+        if ok:
+            await db.commit()
+
+    await state.clear()
+    if ok:
+        await message.answer("So'rovingiz adminga yuborildi. Iltimos, tasdiqlanishini kuting.", reply_markup=user_main_keyboard())
+    else:
+        await message.answer("So'rov yuborilmadi. Sertifikat holatini tekshiring.", reply_markup=user_main_keyboard())
 
 
 @router.message(F.text == "👤 Profilim")
@@ -424,7 +463,8 @@ async def profile_handler(message: Message) -> None:
         f"Username: @{user.username if user.username else '-'}\n"
         f"Telegram ID: {user.telegram_id}\n"
         f"Jami referal: {user.total_referrals}\n"
-        f"Holat: {'bloklangan' if user.is_blocked else 'active'}"
+        f"Holat: {'bloklangan' if user.is_blocked else 'active'}",
+        reply_markup=user_main_keyboard(),
     )
 
 
@@ -436,10 +476,11 @@ async def rules_handler(message: Message) -> None:
         "- fake akkauntlar hisobga olinmaydi\n"
         "- bir foydalanuvchi bir marta hisoblanadi\n"
         "- o'z-o'zini referal qilish taqiqlanadi\n"
-        "- promo kod bir martalik"
+        "- promo kod bir martalik",
+        reply_markup=user_main_keyboard(),
     )
 
 
 @router.message(F.text == "📞 Yordam")
 async def help_handler(message: Message) -> None:
-    await message.answer("Yordam uchun admin bilan bog'laning: @topibolindi")
+    await message.answer("Yordam uchun admin bilan bog'laning: @topibolindi", reply_markup=user_main_keyboard())
