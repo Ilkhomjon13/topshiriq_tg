@@ -127,6 +127,70 @@ async def unblock_user_cmd(message: Message) -> None:
     await message.answer(f"User blokdan ochildi: {tg_id}")
 
 
+@router.message(Command("task_stop"))
+async def task_stop_cmd(message: Message) -> None:
+    admin = await _get_admin_or_reject(message)
+    if not admin:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Foydalanish: /task_stop <task_id>")
+        return
+
+    task_id = int(parts[1])
+    async with SessionLocal() as db:
+        task = await db.get(Task, task_id)
+        if not task:
+            await message.answer("Topshiriq topilmadi.")
+            return
+        task.status = TaskStatus.INACTIVE.value if task.status == TaskStatus.ACTIVE.value else TaskStatus.ACTIVE.value
+        db.add(
+            AuditLog(
+                actor_type="admin",
+                actor_id=admin.id,
+                action="task_status_changed",
+                entity_type="task",
+                entity_id=task.id,
+                payload_json={"status": task.status},
+            )
+        )
+        await db.commit()
+    await message.answer(f"Task #{task_id} status -> {task.status}")
+
+
+@router.message(Command("task_delete"))
+async def task_delete_cmd(message: Message) -> None:
+    admin = await _get_admin_or_reject(message)
+    if not admin:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Foydalanish: /task_delete <task_id>")
+        return
+
+    task_id = int(parts[1])
+    async with SessionLocal() as db:
+        task = await db.get(Task, task_id)
+        if not task:
+            await message.answer("Topshiriq topilmadi.")
+            return
+        task.status = TaskStatus.ARCHIVED.value
+        db.add(
+            AuditLog(
+                actor_type="admin",
+                actor_id=admin.id,
+                action="task_archived",
+                entity_type="task",
+                entity_id=task.id,
+                payload_json={},
+            )
+        )
+        await db.commit()
+    await message.answer(f"Task #{task_id} o'chirildi (archived).")
+
+
 @router.message(F.text == "📋 Topshiriqlar")
 async def tasks_list_handler(message: Message) -> None:
     admin = await _get_admin_or_reject(message)
@@ -144,7 +208,8 @@ async def tasks_list_handler(message: Message) -> None:
                 f"#{task.id} {task.title}\n"
                 f"Status: {task.status}\n"
                 f"Group: {task.group_link or '-'}\n"
-                f"Start: {task.start_date or '-'} | End: {task.end_date or '-'}",
+                f"Start: {task.start_date or '-'} | End: {task.end_date or '-'}\n"
+                f"Buyruqlar: /task_stop {task.id} | /task_delete {task.id}",
                 reply_markup=_task_action_keyboard(task.id, task.status == TaskStatus.ACTIVE.value),
             )
 
@@ -265,11 +330,42 @@ async def add_task_image(message: Message, state: FSMContext) -> None:
         )
         db.add(task)
         await db.flush()
+        db.add_all(
+            [
+                RewardLevel(
+                    task_id=task.id,
+                    level_number=1,
+                    required_count=50,
+                    reward_name="Tefal",
+                    reward_description="50 ta referal uchun",
+                    certificate_text="50 bosqich sertifikati",
+                    validity_days=30,
+                ),
+                RewardLevel(
+                    task_id=task.id,
+                    level_number=2,
+                    required_count=100,
+                    reward_name="Termos",
+                    reward_description="100 ta referal uchun",
+                    certificate_text="100 bosqich sertifikati",
+                    validity_days=30,
+                ),
+                RewardLevel(
+                    task_id=task.id,
+                    level_number=3,
+                    required_count=200,
+                    reward_name="Serviz nabor",
+                    reward_description="200 ta referal uchun",
+                    certificate_text="200 bosqich sertifikati",
+                    validity_days=30,
+                ),
+            ]
+        )
         db.add(AuditLog(actor_type="admin", actor_id=admin.id, action="task_created", entity_type="task", entity_id=task.id, payload_json={}))
         await db.commit()
 
     await state.clear()
-    await message.answer(f"Topshiriq yaratildi: #{task.id} {task.title}")
+    await message.answer(f"Topshiriq yaratildi: #{task.id} {task.title}\nDefault sovg'a bosqichlari (50/100/200) qo'shildi.")
 
 
 @router.message(F.text == "🎁 Sovg'alar")
