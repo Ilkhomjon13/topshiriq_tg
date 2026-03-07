@@ -60,6 +60,7 @@ async def track_group_invites(message: Message) -> None:
             created_count += 1
 
         if created_count > 0:
+            inviter.total_referrals += created_count
             counted = await count_valid_referrals(db, task_id=settings.tracking_task_id, inviter_user_id=inviter.id)
             level = await get_best_level_for_count(db, task_id=settings.tracking_task_id, referrals_count=counted)
             if level:

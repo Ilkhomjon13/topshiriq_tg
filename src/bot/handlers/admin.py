@@ -1,4 +1,6 @@
-﻿from aiogram import F, Router
+﻿import time
+
+from aiogram import F, Router
 from aiogram.filters import Command, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -17,17 +19,33 @@ from src.services.stats_service import collect_dashboard_stats
 
 router = Router(name="admin")
 settings = get_settings()
+_ADMIN_ID_CACHE: set[int] = set()
+_ADMIN_CACHE_TTL_SEC = 300
+_ADMIN_CACHE_EXPIRES_AT = 0.0
 
 
 class IsAdminFilter(Filter):
     async def __call__(self, message: Message) -> bool:
         if not message.from_user:
             return False
-        async with SessionLocal() as db:
-            admin = await get_active_admin(db, telegram_id=message.from_user.id)
-        if admin is not None:
-            setattr(message, "_admin_cached", admin)
-        return admin is not None
+        user_id = message.from_user.id
+        if user_id in settings.superadmin_ids:
+            setattr(message, "_admin_fast_allow", True)
+            return True
+
+        global _ADMIN_CACHE_EXPIRES_AT
+        now = time.monotonic()
+        if now >= _ADMIN_CACHE_EXPIRES_AT:
+            async with SessionLocal() as db:
+                admins = list((await db.scalars(select(Admin.telegram_id).where(Admin.is_active.is_(True)))).all())
+            _ADMIN_ID_CACHE.clear()
+            _ADMIN_ID_CACHE.update(int(x) for x in admins)
+            _ADMIN_CACHE_EXPIRES_AT = now + _ADMIN_CACHE_TTL_SEC
+
+        if user_id in _ADMIN_ID_CACHE:
+            setattr(message, "_admin_fast_allow", True)
+            return True
+        return False
 
 
 class RejectState(StatesGroup):
@@ -880,3 +898,4 @@ async def stats_handler(message: Message) -> None:
         f"- Used sertifikatlar: {stats.used_certificates}\n"
         f"- Rejected sertifikatlar: {stats.rejected_certificates}"
     )
+
