@@ -1,8 +1,6 @@
 ﻿import re
 
 from aiogram import F, Router
-from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -15,21 +13,15 @@ from src.bot.keyboards import (
     user_task_actions_keyboard,
     user_tasks_keyboard,
 )
-from src.core.config import get_settings
 from src.db.session import SessionLocal
 from src.services.certificate_service import (
-    create_or_upgrade_certificate,
-    get_best_level_for_count,
     get_user_certificates,
     request_redemption,
 )
 from src.services.referral_service import (
-    count_valid_referrals,
     get_or_create_user,
     get_task_referral_count,
     get_user_by_telegram_id,
-    list_pending_referrals_for_invited,
-    mark_referral_counted,
     register_referral,
 )
 from src.services.task_service import (
@@ -43,7 +35,6 @@ from src.services.task_service import (
 from src.utils.referral_codes import parse_ref_source_code
 
 router = Router(name="user")
-settings = get_settings()
 
 
 class UserFlowState(StatesGroup):
@@ -60,24 +51,6 @@ def _extract_start_param(message: Message) -> str | None:
     if len(parts) == 2:
         return parts[1].strip()
     return None
-
-
-async def _is_member_of_target_group(message: Message) -> bool:
-    if settings.target_group_id == 0:
-        return True
-    if not message.from_user:
-        return False
-
-    try:
-        member = await message.bot.get_chat_member(chat_id=settings.target_group_id, user_id=message.from_user.id)
-    except TelegramBadRequest:
-        return False
-
-    return member.status in {
-        ChatMemberStatus.MEMBER,
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.CREATOR,
-    }
 
 
 def _task_id_from_button(text: str) -> int | None:
@@ -146,22 +119,6 @@ async def start_handler(message: Message, state: FSMContext) -> None:
                     invited_user_id=user.id,
                     source_code=start_param,
                 )
-
-        if await _is_member_of_target_group(message):
-            pendings = await list_pending_referrals_for_invited(db, invited_user_id=user.id)
-            for referral in pendings:
-                ok = await mark_referral_counted(db, referral_id=referral.id)
-                if not ok:
-                    continue
-                counted = await count_valid_referrals(db, task_id=referral.task_id, inviter_user_id=referral.inviter_user_id)
-                level = await get_best_level_for_count(db, task_id=referral.task_id, referrals_count=counted)
-                if level:
-                    await create_or_upgrade_certificate(
-                        db,
-                        user_id=referral.inviter_user_id,
-                        task_id=referral.task_id,
-                        level=level,
-                    )
 
         await db.commit()
 
