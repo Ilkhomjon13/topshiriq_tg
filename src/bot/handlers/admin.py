@@ -35,6 +35,10 @@ class BroadcastState(StatesGroup):
     waiting_text = State()
 
 
+class RewardManageState(StatesGroup):
+    waiting_payload = State()
+
+
 async def _get_admin_or_reject(message: Message) -> Admin | None:
     if not message.from_user:
         return None
@@ -375,19 +379,239 @@ async def rewards_handler(message: Message) -> None:
         return
 
     async with SessionLocal() as db:
-        rows = (await db.execute(select(RewardLevel, Task).join(Task, Task.id == RewardLevel.task_id).order_by(RewardLevel.task_id, RewardLevel.required_count))).all()
+        tasks = list((await db.scalars(select(Task).order_by(Task.id.asc()))).all())
+        if not tasks:
+            await message.answer("Avval topshiriq yarating.")
+            return
 
-    if not rows:
-        await message.answer("Sovg'a bosqichlari topilmadi.")
+        for task in tasks[:30]:
+            add_markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ Bosqich qo'shish", callback_data=f"admin:reward_add_start:{task.id}")]
+                ]
+            )
+            await message.answer(f"Task #{task.id}: {task.title}", reply_markup=add_markup)
+
+            levels = list(
+                (
+                    await db.scalars(
+                        select(RewardLevel)
+                        .where(RewardLevel.task_id == task.id)
+                        .order_by(RewardLevel.required_count.asc())
+                    )
+                ).all()
+            )
+            if not levels:
+                await message.answer("  - Bosqichlar yo'q")
+                continue
+
+            for level in levels:
+                actions = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="✏️ Tahrirlash", callback_data=f"admin:reward_edit_start:{level.id}"
+                            ),
+                            InlineKeyboardButton(
+                                text="🔁 Faollik", callback_data=f"admin:reward_toggle:{level.id}"
+                            ),
+                        ],
+                        [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"admin:reward_delete:{level.id}")],
+                    ]
+                )
+                await message.answer(
+                    f"Level #{level.level_number} | {level.required_count} ta\n"
+                    f"Sovg'a: {level.reward_name}\n"
+                    f"Tavsif: {level.reward_description}\n"
+                    f"Holat: {'active' if level.is_active else 'inactive'}",
+                    reply_markup=actions,
+                )
+
+
+@router.callback_query(F.data.startswith("admin:reward_add_start:"))
+async def reward_add_start_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    admin = await _get_admin_from_callback(callback)
+    if not admin or not callback.data:
         return
 
-    for level, task in rows[:50]:
-        await message.answer(
-            f"Task #{task.id}: {task.title}\n"
-            f"Level #{level.level_number} | {level.required_count} ta\n"
-            f"Sovg'a: {level.reward_name}\n"
-            f"Holat: {'active' if level.is_active else 'inactive'}"
+    task_id = int(callback.data.split(":")[-1])
+    await state.set_state(RewardManageState.waiting_payload)
+    await state.update_data(action="add", task_id=task_id)
+    await callback.message.answer(
+        "Yangi bosqich formati:\n"
+        "`required_count|reward_name|reward_description`\n"
+        "Misol: `300|Mikser|300 ta referal uchun`",
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:reward_edit_start:"))
+async def reward_edit_start_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    admin = await _get_admin_from_callback(callback)
+    if not admin or not callback.data:
+        return
+
+    level_id = int(callback.data.split(":")[-1])
+    await state.set_state(RewardManageState.waiting_payload)
+    await state.update_data(action="edit", level_id=level_id)
+    await callback.message.answer(
+        "Tahrirlash formati:\n"
+        "`required_count|reward_name|reward_description`\n"
+        "Misol: `100|Termos Premium|Yangilangan tavsif`",
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+
+
+@router.message(RewardManageState.waiting_payload)
+async def reward_payload_handler(message: Message, state: FSMContext) -> None:
+    admin = await _get_admin_or_reject(message)
+    if not admin:
+        await state.clear()
+        return
+
+    payload = (message.text or "").strip()
+    parts = [x.strip() for x in payload.split("|")]
+    if len(parts) != 3 or not parts[0].isdigit():
+        await message.answer("Format xato. To'g'ri format: `required_count|reward_name|reward_description`", parse_mode="Markdown")
+        return
+
+    required_count = int(parts[0])
+    reward_name = parts[1]
+    reward_description = parts[2]
+    data = await state.get_data()
+    action = data.get("action")
+
+    async with SessionLocal() as db:
+        if action == "add":
+            task_id = int(data.get("task_id"))
+            last_level_no = (
+                await db.scalar(
+                    select(RewardLevel.level_number)
+                    .where(RewardLevel.task_id == task_id)
+                    .order_by(RewardLevel.level_number.desc())
+                )
+            ) or 0
+            level = RewardLevel(
+                task_id=task_id,
+                level_number=int(last_level_no) + 1,
+                required_count=required_count,
+                reward_name=reward_name,
+                reward_description=reward_description,
+                certificate_text=f"{required_count} bosqich sertifikati",
+                validity_days=30,
+                is_active=True,
+            )
+            db.add(level)
+            await db.flush()
+            db.add(
+                AuditLog(
+                    actor_type="admin",
+                    actor_id=admin.id,
+                    action="reward_level_created",
+                    entity_type="reward_level",
+                    entity_id=level.id,
+                    payload_json={},
+                )
+            )
+            await db.commit()
+            await message.answer(f"Yangi bosqich qo'shildi: #{level.id} ({required_count} ta -> {reward_name})")
+        else:
+            level_id = int(data.get("level_id"))
+            level = await db.get(RewardLevel, level_id)
+            if not level:
+                await message.answer("Bosqich topilmadi.")
+                await state.clear()
+                return
+            level.required_count = required_count
+            level.reward_name = reward_name
+            level.reward_description = reward_description
+            db.add(
+                AuditLog(
+                    actor_type="admin",
+                    actor_id=admin.id,
+                    action="reward_level_updated",
+                    entity_type="reward_level",
+                    entity_id=level.id,
+                    payload_json={},
+                )
+            )
+            await db.commit()
+            await message.answer(f"Bosqich yangilandi: #{level.id}")
+
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("admin:reward_toggle:"))
+async def reward_toggle_handler(callback: CallbackQuery) -> None:
+    admin = await _get_admin_from_callback(callback)
+    if not admin or not callback.data:
+        return
+
+    level_id = int(callback.data.split(":")[-1])
+    status_text = "inactive"
+    async with SessionLocal() as db:
+        level = await db.get(RewardLevel, level_id)
+        if not level:
+            await callback.answer("Bosqich topilmadi", show_alert=True)
+            return
+        level.is_active = not level.is_active
+        status_text = "active" if level.is_active else "inactive"
+        db.add(
+            AuditLog(
+                actor_type="admin",
+                actor_id=admin.id,
+                action="reward_level_toggled",
+                entity_type="reward_level",
+                entity_id=level.id,
+                payload_json={"is_active": level.is_active},
+            )
         )
+        await db.commit()
+
+    await callback.message.answer(f"Bosqich #{level_id} holati -> {status_text}")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:reward_delete:"))
+async def reward_delete_handler(callback: CallbackQuery) -> None:
+    admin = await _get_admin_from_callback(callback)
+    if not admin or not callback.data:
+        return
+
+    level_id = int(callback.data.split(":")[-1])
+    async with SessionLocal() as db:
+        level = await db.get(RewardLevel, level_id)
+        if not level:
+            await callback.answer("Bosqich topilmadi", show_alert=True)
+            return
+
+        used_in_cert = await db.scalar(select(Certificate.id).where(Certificate.reward_level_id == level_id))
+        if used_in_cert:
+            await callback.message.answer(
+                "Bu bosqich sertifikatlarga bog'langan. O'chirish o'rniga inactive qilindi."
+            )
+            level.is_active = False
+            await db.commit()
+            await callback.answer()
+            return
+
+        await db.delete(level)
+        db.add(
+            AuditLog(
+                actor_type="admin",
+                actor_id=admin.id,
+                action="reward_level_deleted",
+                entity_type="reward_level",
+                entity_id=level_id,
+                payload_json={},
+            )
+        )
+        await db.commit()
+
+    await callback.message.answer(f"Bosqich o'chirildi: #{level_id}")
+    await callback.answer()
 
 
 @router.message(F.text == "👥 Foydalanuvchilar")
