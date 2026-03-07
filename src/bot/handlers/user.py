@@ -309,6 +309,9 @@ async def task_rules_handler(message: Message, state: FSMContext) -> None:
 
 @router.message(UserFlowState.task_actions, F.text == "🎁 Sovg'alar")
 async def task_rewards_handler(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+
     data = await state.get_data()
     task_id = int(data.get("task_id", 0))
     if task_id <= 0:
@@ -316,16 +319,52 @@ async def task_rewards_handler(message: Message, state: FSMContext) -> None:
         return
 
     async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, telegram_id=message.from_user.id)
         levels = await get_task_levels(db, task_id=task_id)
+        current_count = 0
+        if user:
+            current_count = await get_task_referral_count(db, task_id=task_id, inviter_user_id=user.id)
 
     if not levels:
         await message.answer("Sovg'a bosqichlari hali kiritilmagan.")
         return
 
-    lines = ["Sovg'a bosqichlari:"]
+    await message.answer(f"Sizning joriy natijangiz: {current_count} ta odam.")
+
+    cards_sent = 0
     for level in levels:
-        lines.append(f"- {level.required_count} ta: {level.reward_name}")
-    await message.answer("\n".join(lines))
+        required = level.required_count
+        progress_percent = min(100, int((current_count / required) * 100)) if required > 0 else 0
+        filled = min(10, progress_percent // 10)
+        bar = "█" * filled + "░" * (10 - filled)
+
+        if current_count >= required:
+            status_text = "✅ Ushbu sertifikat bosqichiga yetgansiz."
+            remain_text = "Keyingi bosqichga o'tishingiz mumkin."
+        else:
+            remaining = required - current_count
+            status_text = f"⏳ Yana {remaining} ta odam qoldi."
+            remain_text = f"{required} talik sertifikatni faollashtirish uchun {remaining} ta kerak."
+
+        card_text = (
+            f"🏆 {level.reward_name}\n"
+            f"🎯 Talab: {required} ta odam\n"
+            f"📈 Hozir: {current_count} ta odam\n"
+            f"📊 Progress: {bar} {progress_percent}%\n"
+            f"{status_text}\n"
+            f"{remain_text}"
+        )
+        if level.reward_description:
+            card_text += f"\n📝 {level.reward_description}"
+
+        if level.reward_image_file_id:
+            await message.answer_photo(photo=level.reward_image_file_id, caption=card_text)
+        else:
+            await message.answer(card_text)
+        cards_sent += 1
+
+    if cards_sent == 0:
+        await message.answer("Sovg'a kartalari topilmadi.")
 
 
 @router.message(F.text == "📊 Mening natijam")
