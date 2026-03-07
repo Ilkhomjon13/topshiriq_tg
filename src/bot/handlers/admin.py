@@ -202,7 +202,13 @@ async def tasks_list_handler(message: Message) -> None:
         return
 
     async with SessionLocal() as db:
-        tasks = list((await db.scalars(select(Task).order_by(Task.id.asc()))).all())
+        tasks = list(
+            (
+                await db.scalars(
+                    select(Task).where(Task.status.in_([TaskStatus.ACTIVE.value, TaskStatus.INACTIVE.value])).order_by(Task.id.asc())
+                )
+            ).all()
+        )
         if not tasks:
             await message.answer("Topshiriqlar yo'q.")
             return
