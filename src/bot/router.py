@@ -7,5 +7,5 @@ from src.bot.handlers.user import router as user_router
 
 def register_routers(main_router: Router) -> None:
     main_router.include_router(group_tracking_router)
-    main_router.include_router(user_router)
     main_router.include_router(admin_router)
+    main_router.include_router(user_router)
