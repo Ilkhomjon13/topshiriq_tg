@@ -1,4 +1,6 @@
 ﻿from aiogram import F, Router
+from aiogram.enums import ChatMemberStatus
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -13,8 +15,22 @@ from src.bot.inline_keyboards import (
 from src.bot.keyboards import user_main_keyboard
 from src.core.config import get_settings
 from src.db.session import SessionLocal
-from src.services.certificate_service import get_user_certificates, get_user_task_certificates, request_redemption
-from src.services.referral_service import get_or_create_user, get_task_referral_count, get_user_by_telegram_id, register_referral
+from src.services.certificate_service import (
+    create_or_upgrade_certificate,
+    get_best_level_for_count,
+    get_user_certificates,
+    get_user_task_certificates,
+    request_redemption,
+)
+from src.services.referral_service import (
+    count_valid_referrals,
+    get_or_create_user,
+    get_task_referral_count,
+    get_user_by_telegram_id,
+    list_pending_referrals_for_invited,
+    mark_referral_counted,
+    register_referral,
+)
 from src.services.task_service import (
     get_task_by_id,
     get_task_levels,
@@ -23,7 +39,7 @@ from src.services.task_service import (
     list_active_tasks,
     list_user_tasks,
 )
-from src.utils.referral_codes import build_ref_source_code, parse_ref_source_code
+from src.utils.referral_codes import parse_ref_source_code
 
 router = Router(name="user")
 settings = get_settings()
@@ -40,6 +56,24 @@ def _extract_start_param(message: Message) -> str | None:
     if len(parts) == 2:
         return parts[1].strip()
     return None
+
+
+async def _is_member_of_target_group(message: Message) -> bool:
+    if settings.target_group_id == 0:
+        return True
+    if not message.from_user:
+        return False
+
+    try:
+        member = await message.bot.get_chat_member(chat_id=settings.target_group_id, user_id=message.from_user.id)
+    except TelegramBadRequest:
+        return False
+
+    return member.status in {
+        ChatMemberStatus.MEMBER,
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.CREATOR,
+    }
 
 
 @router.message(CommandStart())
@@ -67,6 +101,23 @@ async def start_handler(message: Message) -> None:
                     invited_user_id=user.id,
                     source_code=start_param,
                 )
+
+        # Group tracking flow: count when invited user starts bot and is member in target group.
+        if await _is_member_of_target_group(message):
+            pendings = await list_pending_referrals_for_invited(db, invited_user_id=user.id)
+            for referral in pendings:
+                ok = await mark_referral_counted(db, referral_id=referral.id)
+                if not ok:
+                    continue
+                counted = await count_valid_referrals(db, task_id=referral.task_id, inviter_user_id=referral.inviter_user_id)
+                level = await get_best_level_for_count(db, task_id=referral.task_id, referrals_count=counted)
+                if level:
+                    await create_or_upgrade_certificate(
+                        db,
+                        user_id=referral.inviter_user_id,
+                        task_id=referral.task_id,
+                        level=level,
+                    )
 
         await db.commit()
 
@@ -140,14 +191,10 @@ async def task_join_handler(callback: CallbackQuery) -> None:
         await join_task(db, task_id=task_id, user_id=user.id)
         await db.commit()
 
-    source_code = build_ref_source_code(task_id=task_id, inviter_user_id=user.id)
-    ref_link = f"https://t.me/{settings.base_bot_username}?start={source_code}"
-
     await callback.message.answer(
         "Siz topshiriqqa qo'shildingiz.\n"
-        "Taklif uchun maxsus havolangiz:\n"
-        f"{ref_link}\n\n"
-        "Eslatma: referal botga shu havola orqali kirib /start qilganda hisoblanadi."
+        "Endi guruhga odam qo'shganingizda bot avtomatik hisoblaydi.\n"
+        "Hisobga olish sharti: qo'shilgan user botni /start qilishi va guruhda bo'lishi kerak."
     )
     await callback.answer("Qatnashish muvaffaqiyatli")
 

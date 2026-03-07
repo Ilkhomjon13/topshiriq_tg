@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     redis_url: str = Field(alias="REDIS_URL")
     superadmin_ids_raw: str = Field(default="", alias="SUPERADMIN_IDS")
     base_bot_username: str = Field(alias="BASE_BOT_USERNAME")
+    target_group_id: int = Field(default=0, alias="TARGET_GROUP_ID")
+    tracking_task_id: int = Field(default=1, alias="TRACKING_TASK_ID")
 
     @property
     def superadmin_ids(self) -> set[int]:

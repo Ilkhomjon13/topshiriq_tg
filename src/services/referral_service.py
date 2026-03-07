@@ -41,8 +41,8 @@ async def register_referral(
     if not inviter or not invited:
         return None
 
-    # minimal anti-fraud: blocked accounts and username-less invited users are ignored.
-    if inviter.is_blocked or invited.is_blocked or not invited.username:
+    # minimal anti-fraud: blocked accounts are ignored.
+    if inviter.is_blocked or invited.is_blocked:
         return None
 
     existing = await db.scalar(
@@ -108,3 +108,12 @@ async def mark_referral_counted(db: AsyncSession, referral_id: int, admin_id: in
         {"inviter_user_id": referral.inviter_user_id},
     )
     return True
+
+
+async def list_pending_referrals_for_invited(db: AsyncSession, invited_user_id: int) -> list[Referral]:
+    result = await db.scalars(
+        select(Referral).where(
+            and_(Referral.invited_user_id == invited_user_id, Referral.status == ReferralStatus.PENDING.value)
+        )
+    )
+    return list(result)
