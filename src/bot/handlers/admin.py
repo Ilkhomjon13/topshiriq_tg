@@ -177,3 +177,23 @@ async def stats_handler(message: Message) -> None:
         f"- Used sertifikatlar: {stats.used_certificates}\n"
         f"- Rejected sertifikatlar: {stats.rejected_certificates}"
     )
+
+
+@router.message(
+    F.text.in_(
+        {
+            "📋 Topshiriqlar",
+            "➕ Topshiriq qo'shish",
+            "🎁 Sovg'alar",
+            "👥 Foydalanuvchilar",
+            "📢 Xabarnoma",
+            "⚙️ Sozlamalar",
+            "🧾 Loglar",
+        }
+    )
+)
+async def not_implemented_admin_buttons(message: Message) -> None:
+    admin_id = await _get_admin_or_reject(message)
+    if not admin_id:
+        return
+    await message.answer("Bu bo'lim keyingi bosqichda ulanadi.")
