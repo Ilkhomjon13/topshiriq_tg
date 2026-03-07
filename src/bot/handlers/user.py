@@ -195,7 +195,7 @@ async def task_join_handler(callback: CallbackQuery) -> None:
     await callback.message.answer(
         "Siz topshiriqqa qo'shildingiz.\n"
         "Endi guruhga odam qo'shganingizda bot avtomatik hisoblaydi.\n"
-        "Hisobga olish sharti: qo'shilgan user botni /start qilishi va guruhda bo'lishi kerak."
+        "Hisobga olish sharti: qo'shilgan user guruhga muvaffaqiyatli qo'shilgan bo'lishi kerak."
     )
     await callback.answer("Qatnashish muvaffaqiyatli")
 

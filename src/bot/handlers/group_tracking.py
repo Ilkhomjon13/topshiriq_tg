@@ -4,7 +4,8 @@ from aiogram.types import Message
 
 from src.core.config import get_settings
 from src.db.session import SessionLocal
-from src.services.referral_service import get_or_create_user, register_referral
+from src.services.certificate_service import create_or_upgrade_certificate, get_best_level_for_count
+from src.services.referral_service import count_valid_referrals, get_or_create_user, mark_referral_counted, register_referral
 from src.services.task_service import is_user_participant
 
 router = Router(name="group_tracking")
@@ -42,12 +43,26 @@ async def track_group_invites(message: Message) -> None:
                 full_name=member.full_name,
                 username=member.username,
             )
-            await register_referral(
+            referral = await register_referral(
                 db,
                 task_id=settings.tracking_task_id,
                 inviter_user_id=inviter.id,
                 invited_user_id=invited.id,
                 source_code="group_add",
             )
+            if not referral:
+                continue
+
+            # Immediate counting mode: referral is counted as soon as user is added to group.
+            await mark_referral_counted(db, referral_id=referral.id)
+            counted = await count_valid_referrals(db, task_id=settings.tracking_task_id, inviter_user_id=inviter.id)
+            level = await get_best_level_for_count(db, task_id=settings.tracking_task_id, referrals_count=counted)
+            if level:
+                await create_or_upgrade_certificate(
+                    db,
+                    user_id=inviter.id,
+                    task_id=settings.tracking_task_id,
+                    level=level,
+                )
 
         await db.commit()
