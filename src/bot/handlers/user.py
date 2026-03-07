@@ -103,6 +103,7 @@ async def _send_task_card(message: Message, task_id: int, user_id: int) -> None:
             await message.answer("Topshiriq topilmadi.", reply_markup=user_main_keyboard())
             return
         joined = await is_user_participant(db, task_id=task_id, user_id=user_id)
+        has_group_link = bool((task.group_link or "").strip())
 
     short_description = (task.description or "").strip()
     if len(short_description) > 220:
@@ -113,10 +114,10 @@ async def _send_task_card(message: Message, task_id: int, user_id: int) -> None:
         await message.answer_photo(
             photo=task.image_file_id,
             caption=text,
-            reply_markup=user_task_actions_keyboard(is_joined=joined),
+            reply_markup=user_task_actions_keyboard(is_joined=joined, has_group_link=has_group_link),
         )
     else:
-        await message.answer(text, reply_markup=user_task_actions_keyboard(is_joined=joined))
+        await message.answer(text, reply_markup=user_task_actions_keyboard(is_joined=joined, has_group_link=has_group_link))
 
 
 @router.message(CommandStart())
@@ -365,6 +366,24 @@ async def task_rewards_handler(message: Message, state: FSMContext) -> None:
 
     if cards_sent == 0:
         await message.answer("Sovg'a kartalari topilmadi.")
+
+
+@router.message(UserFlowState.task_actions, F.text == "🔗 Guruhga o'tish")
+async def task_group_link_handler(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id = int(data.get("task_id", 0))
+    if task_id <= 0:
+        await message.answer("Topshiriq tanlanmagan.")
+        return
+
+    async with SessionLocal() as db:
+        task = await get_task_by_id(db, task_id=task_id)
+
+    if not task or not (task.group_link or "").strip():
+        await message.answer("Bu topshiriq uchun guruh havolasi kiritilmagan.")
+        return
+
+    await message.answer(f"Guruhga o'tish havolasi:\n{task.group_link}")
 
 
 @router.message(F.text == "📊 Mening natijam")

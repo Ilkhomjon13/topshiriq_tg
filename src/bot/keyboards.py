@@ -21,14 +21,17 @@ def user_tasks_keyboard(tasks: list[tuple[int, str]]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-def user_task_actions_keyboard(is_joined: bool) -> ReplyKeyboardMarkup:
+def user_task_actions_keyboard(is_joined: bool, has_group_link: bool = False) -> ReplyKeyboardMarkup:
     join_text = "✅ Siz qatnashyapsiz" if is_joined else "✅ Qatnashish"
+    rows = [
+        [KeyboardButton(text=join_text), KeyboardButton(text="📈 Progressim")],
+        [KeyboardButton(text="ℹ️ Qoidalar"), KeyboardButton(text="🎁 Sovg'alar")],
+    ]
+    if has_group_link:
+        rows.append([KeyboardButton(text="🔗 Guruhga o'tish")])
+    rows.append([KeyboardButton(text="🔙 Orqaga")])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=join_text), KeyboardButton(text="📈 Progressim")],
-            [KeyboardButton(text="ℹ️ Qoidalar"), KeyboardButton(text="🎁 Sovg'alar")],
-            [KeyboardButton(text="🔙 Orqaga")],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
     )
 
