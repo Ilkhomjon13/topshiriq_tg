@@ -13,6 +13,7 @@ from src.bot.keyboards import (
     user_task_actions_keyboard,
     user_tasks_keyboard,
 )
+from src.core.config import get_settings
 from src.db.session import SessionLocal
 from src.services.certificate_service import (
     get_user_certificates,
@@ -35,6 +36,7 @@ from src.services.task_service import (
 from src.utils.referral_codes import parse_ref_source_code
 
 router = Router(name="user")
+settings = get_settings()
 
 
 class UserFlowState(StatesGroup):
@@ -67,6 +69,19 @@ def _cert_id_from_button(text: str) -> int | None:
     if not match:
         return None
     return int(match.group(1))
+
+
+async def _create_personal_group_invite_link(message: Message, task_id: int, user_id: int) -> str | None:
+    if not settings.target_group_id:
+        return None
+    try:
+        link = await message.bot.create_chat_invite_link(
+            chat_id=settings.target_group_id,
+            name=f"tp:t{task_id}:u{user_id}",
+        )
+    except Exception:
+        return None
+    return link.invite_link
 
 
 async def _send_task_card(message: Message, task_id: int, user_id: int) -> None:
@@ -202,11 +217,28 @@ async def task_join_handler(message: Message, state: FSMContext) -> None:
             full_name=message.from_user.full_name,
             username=message.from_user.username,
         )
+        already_joined = await is_user_participant(db, task_id=task_id, user_id=user.id)
         await join_task(db, task_id=task_id, user_id=user.id)
         await db.commit()
 
     await _send_task_card(message, task_id=task_id, user_id=user.id)
-    await message.answer("Siz topshiriqda qatnashyapsiz.")
+    if already_joined:
+        await message.answer("Siz allaqachon ushbu topshiriqda qatnashyapsiz.")
+        return
+
+    invite_link = await _create_personal_group_invite_link(message, task_id=task_id, user_id=user.id)
+    if invite_link:
+        await message.answer(
+            "Siz topshiriqda qatnashyapsiz.\n"
+            "Taklif uchun shaxsiy guruh linkingiz:\n"
+            f"{invite_link}\n"
+            "Aynan shu link orqali kirganlar avtomatik hisoblanadi."
+        )
+    else:
+        await message.answer(
+            "Siz topshiriqda qatnashyapsiz.\n"
+            "Bot guruhga shaxsiy link yarata olmadi. Botga guruhda admin huquqi (Invite users) berilganini tekshiring."
+        )
 
 
 @router.message(UserFlowState.task_actions, F.text == "📈 Progressim")
