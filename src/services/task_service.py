@@ -60,3 +60,20 @@ async def is_user_participant(db: AsyncSession, task_id: int, user_id: int) -> b
         )
     )
     return participant is not None
+
+
+async def get_latest_active_participant_task_id(db: AsyncSession, user_id: int) -> int | None:
+    task_id = await db.scalar(
+        select(TaskParticipant.task_id)
+        .join(Task, Task.id == TaskParticipant.task_id)
+        .where(
+            and_(
+                TaskParticipant.user_id == user_id,
+                TaskParticipant.status == ParticipantStatus.ACTIVE.value,
+                Task.status == TaskStatus.ACTIVE.value,
+            )
+        )
+        .order_by(TaskParticipant.joined_at.desc(), TaskParticipant.id.desc())
+        .limit(1)
+    )
+    return int(task_id) if task_id is not None else None

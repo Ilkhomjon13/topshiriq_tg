@@ -5,10 +5,11 @@ from aiogram.enums import ChatType
 from aiogram.types import Message
 
 from src.core.config import get_settings
+from src.core.enums import ReferralStatus
 from src.db.session import SessionLocal
 from src.services.certificate_service import create_or_upgrade_certificate, get_best_level_for_count
 from src.services.referral_service import count_valid_referrals, get_or_create_user, register_referral
-from src.services.task_service import is_user_participant
+from src.services.task_service import get_latest_active_participant_task_id, is_user_participant
 
 router = Router(name="group_tracking")
 settings = get_settings()
@@ -32,12 +33,21 @@ async def track_group_invites(message: Message) -> None:
             username=message.from_user.username,
         )
 
-        if not await is_user_participant(db, task_id=settings.tracking_task_id, user_id=inviter.id):
+        task_id = settings.tracking_task_id
+        if task_id and await is_user_participant(db, task_id=task_id, user_id=inviter.id):
+            resolved_task_id = task_id
+        else:
+            resolved_task_id = await get_latest_active_participant_task_id(db, user_id=inviter.id)
+
+        if not resolved_task_id:
             await db.commit()
             return
 
         created_count = 0
         for member in message.new_chat_members:
+            if member.is_bot:
+                continue
+
             invited = await get_or_create_user(
                 db,
                 telegram_id=member.id,
@@ -46,7 +56,7 @@ async def track_group_invites(message: Message) -> None:
             )
             referral = await register_referral(
                 db,
-                task_id=settings.tracking_task_id,
+                task_id=resolved_task_id,
                 inviter_user_id=inviter.id,
                 invited_user_id=invited.id,
                 source_code="group_add",
@@ -55,19 +65,19 @@ async def track_group_invites(message: Message) -> None:
                 continue
 
             # Optimized immediate counting without extra function lookups per member.
-            referral.status = "counted"
+            referral.status = ReferralStatus.COUNTED.value
             referral.counted_at = datetime.utcnow()
             created_count += 1
 
         if created_count > 0:
             inviter.total_referrals += created_count
-            counted = await count_valid_referrals(db, task_id=settings.tracking_task_id, inviter_user_id=inviter.id)
-            level = await get_best_level_for_count(db, task_id=settings.tracking_task_id, referrals_count=counted)
+            counted = await count_valid_referrals(db, task_id=resolved_task_id, inviter_user_id=inviter.id)
+            level = await get_best_level_for_count(db, task_id=resolved_task_id, referrals_count=counted)
             if level:
                 await create_or_upgrade_certificate(
                     db,
                     user_id=inviter.id,
-                    task_id=settings.tracking_task_id,
+                    task_id=resolved_task_id,
                     level=level,
                 )
 
