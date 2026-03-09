@@ -68,16 +68,6 @@ async def get_user_certificates(db: AsyncSession, user_id: int) -> list[Certific
     return list(result)
 
 
-async def get_user_task_certificates(db: AsyncSession, user_id: int, task_id: int) -> list[tuple[Certificate, RewardLevel]]:
-    result = await db.execute(
-        select(Certificate, RewardLevel)
-        .join(RewardLevel, RewardLevel.id == Certificate.reward_level_id)
-        .where(and_(Certificate.user_id == user_id, Certificate.task_id == task_id))
-        .order_by(Certificate.id.desc())
-    )
-    return list(result.all())
-
-
 async def request_redemption(db: AsyncSession, certificate_id: int, user_id: int) -> bool:
     cert = await db.get(Certificate, certificate_id)
     if not cert or cert.user_id != user_id or cert.status != CertificateStatus.AVAILABLE.value:

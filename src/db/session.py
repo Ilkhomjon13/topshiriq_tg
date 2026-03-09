@@ -11,8 +11,3 @@ engine = create_async_engine(
     pool_recycle=1800,
 )
 SessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-
-
-async def get_db_session() -> AsyncSession:
-    async with SessionLocal() as session:
-        yield session

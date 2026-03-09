@@ -21,12 +21,14 @@ from src.services.certificate_service import (
 from src.services.referral_service import (
     get_or_create_user,
     get_task_referral_count,
+    get_task_referral_counts_for_user,
     get_user_by_telegram_id,
     register_referral,
 )
 from src.services.task_service import (
     get_task_by_id,
     get_task_levels,
+    get_task_levels_map,
     is_user_participant,
     join_task,
     list_active_tasks,
@@ -367,10 +369,13 @@ async def result_handler(message: Message) -> None:
             await message.answer("Siz hali hech qaysi topshiriqqa qo'shilmagansiz.")
             return
 
+        task_ids = [task.id for task in tasks]
+        count_map = await get_task_referral_counts_for_user(db, inviter_user_id=user.id, task_ids=task_ids)
+        levels_map = await get_task_levels_map(db, task_ids=task_ids)
         lines: list[str] = []
         for task in tasks:
-            count = await get_task_referral_count(db, task_id=task.id, inviter_user_id=user.id)
-            levels = await get_task_levels(db, task_id=task.id)
+            count = count_map.get(task.id, 0)
+            levels = levels_map.get(task.id, [])
             next_level = next((level for level in levels if level.required_count > count), None)
             if next_level:
                 lines.append(f"{task.title}: {count} ta, keyingi sovg'agacha {next_level.required_count - count} ta")

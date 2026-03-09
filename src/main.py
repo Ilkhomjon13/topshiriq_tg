@@ -13,13 +13,15 @@ from src.services.seed_service import ensure_seed_data
 
 
 async def _startup() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
     settings = get_settings()
+    if settings.run_db_init:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
     async with SessionLocal() as db:
         await ensure_superadmins(db, telegram_ids=settings.superadmin_ids)
-        await ensure_seed_data(db)
+        if settings.run_seed:
+            await ensure_seed_data(db)
         await db.commit()
 
 

@@ -9,7 +9,7 @@ from src.core.enums import ReferralStatus
 from src.db.models import User as DbUser
 from src.db.session import SessionLocal
 from src.services.certificate_service import create_or_upgrade_certificate, get_best_level_for_count
-from src.services.referral_service import count_valid_referrals, get_or_create_user, register_referral
+from src.services.referral_service import count_valid_referrals, get_or_create_user, register_referral_fast
 from src.services.task_service import is_user_participant, list_active_participant_task_ids
 
 router = Router(name="group_tracking")
@@ -57,11 +57,11 @@ async def _count_manual_add(adder_tg_user: TgUser, invited_members: list[TgUser]
             )
 
             for task_id in adder_task_ids:
-                referral = await register_referral(
-                    db,
+                referral = await register_referral_fast(
+                    db=db,
                     task_id=task_id,
-                    inviter_user_id=adder.id,
-                    invited_user_id=invited.id,
+                    inviter=adder,
+                    invited=invited,
                     source_code="group_add",
                 )
                 if not referral:

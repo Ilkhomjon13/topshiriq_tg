@@ -29,13 +29,6 @@ async def _generate_unique_promo(db: AsyncSession, level_required_count: int) ->
             return candidate
 
 
-async def list_pending_requests(db: AsyncSession) -> list[RedemptionRequest]:
-    result = await db.scalars(
-        select(RedemptionRequest).where(RedemptionRequest.status == CertificateStatus.PENDING.value).order_by(RedemptionRequest.id.asc())
-    )
-    return list(result)
-
-
 async def list_pending_requests_view(db: AsyncSession, limit: int = 20) -> list[PendingRequestView]:
     rows = (
         await db.execute(

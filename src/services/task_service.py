@@ -24,6 +24,20 @@ async def get_task_levels(db: AsyncSession, task_id: int) -> list[RewardLevel]:
     return list(result)
 
 
+async def get_task_levels_map(db: AsyncSession, task_ids: list[int]) -> dict[int, list[RewardLevel]]:
+    if not task_ids:
+        return {}
+    rows = await db.scalars(
+        select(RewardLevel)
+        .where(and_(RewardLevel.task_id.in_(task_ids), RewardLevel.is_active.is_(True)))
+        .order_by(RewardLevel.task_id.asc(), RewardLevel.required_count.asc())
+    )
+    result: dict[int, list[RewardLevel]] = {}
+    for level in rows:
+        result.setdefault(level.task_id, []).append(level)
+    return result
+
+
 async def list_user_tasks(db: AsyncSession, user_id: int) -> list[Task]:
     result = await db.scalars(
         select(Task)
@@ -60,23 +74,6 @@ async def is_user_participant(db: AsyncSession, task_id: int, user_id: int) -> b
         )
     )
     return participant is not None
-
-
-async def get_latest_active_participant_task_id(db: AsyncSession, user_id: int) -> int | None:
-    task_id = await db.scalar(
-        select(TaskParticipant.task_id)
-        .join(Task, Task.id == TaskParticipant.task_id)
-        .where(
-            and_(
-                TaskParticipant.user_id == user_id,
-                TaskParticipant.status == ParticipantStatus.ACTIVE.value,
-                Task.status == TaskStatus.ACTIVE.value,
-            )
-        )
-        .order_by(TaskParticipant.joined_at.desc(), TaskParticipant.id.desc())
-        .limit(1)
-    )
-    return int(task_id) if task_id is not None else None
 
 
 async def list_active_participant_task_ids(db: AsyncSession, user_id: int) -> list[int]:
