@@ -1,5 +1,4 @@
 from datetime import datetime
-import re
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
@@ -7,7 +6,6 @@ from aiogram.types import Message
 
 from src.core.config import get_settings
 from src.core.enums import ReferralStatus
-from src.db.models import User
 from src.db.session import SessionLocal
 from src.services.certificate_service import create_or_upgrade_certificate, get_best_level_for_count
 from src.services.referral_service import count_valid_referrals, get_or_create_user, register_referral
@@ -15,7 +13,6 @@ from src.services.task_service import get_latest_active_participant_task_id, is_
 
 router = Router(name="group_tracking")
 settings = get_settings()
-PERSONAL_INVITE_RE = re.compile(r"^tp:t(?P<task_id>\d+):u(?P<user_id>\d+)$")
 
 
 @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), F.new_chat_members)
@@ -43,18 +40,6 @@ async def track_group_invites(message: Message) -> None:
         else:
             adder_task_id = await get_latest_active_participant_task_id(db, user_id=adder.id)
 
-        invite_task_id: int | None = None
-        invite_inviter: User | None = None
-        invite_name = (message.invite_link.name or "").strip() if message.invite_link else ""
-        invite_match = PERSONAL_INVITE_RE.match(invite_name)
-        if invite_match:
-            parsed_task_id = int(invite_match.group("task_id"))
-            parsed_user_id = int(invite_match.group("user_id"))
-            parsed_inviter = await db.get(User, parsed_user_id)
-            if parsed_inviter and await is_user_participant(db, task_id=parsed_task_id, user_id=parsed_user_id):
-                invite_task_id = parsed_task_id
-                invite_inviter = parsed_inviter
-
         created_counts: dict[tuple[int, int], int] = {}
 
         for member in message.new_chat_members:
@@ -63,10 +48,6 @@ async def track_group_invites(message: Message) -> None:
 
             inviter = adder
             resolved_task_id = adder_task_id
-            # Joined by personal invite-link: attribute this member to encoded inviter/task.
-            if invite_task_id and invite_inviter and message.from_user.id == member.id:
-                inviter = invite_inviter
-                resolved_task_id = invite_task_id
 
             if not resolved_task_id:
                 continue
