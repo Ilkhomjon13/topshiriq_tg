@@ -77,3 +77,19 @@ async def get_latest_active_participant_task_id(db: AsyncSession, user_id: int) 
         .limit(1)
     )
     return int(task_id) if task_id is not None else None
+
+
+async def list_active_participant_task_ids(db: AsyncSession, user_id: int) -> list[int]:
+    result = await db.scalars(
+        select(TaskParticipant.task_id)
+        .join(Task, Task.id == TaskParticipant.task_id)
+        .where(
+            and_(
+                TaskParticipant.user_id == user_id,
+                TaskParticipant.status == ParticipantStatus.ACTIVE.value,
+                Task.status == TaskStatus.ACTIVE.value,
+            )
+        )
+        .order_by(TaskParticipant.joined_at.desc(), TaskParticipant.id.desc())
+    )
+    return [int(task_id) for task_id in result]

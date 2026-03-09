@@ -9,7 +9,7 @@ from src.core.enums import ReferralStatus
 from src.db.session import SessionLocal
 from src.services.certificate_service import create_or_upgrade_certificate, get_best_level_for_count
 from src.services.referral_service import count_valid_referrals, get_or_create_user, register_referral
-from src.services.task_service import get_latest_active_participant_task_id, is_user_participant
+from src.services.task_service import is_user_participant, list_active_participant_task_ids
 
 router = Router(name="group_tracking")
 settings = get_settings()
@@ -36,9 +36,9 @@ async def track_group_invites(message: Message) -> None:
 
         default_task_id = settings.tracking_task_id
         if default_task_id and await is_user_participant(db, task_id=default_task_id, user_id=adder.id):
-            adder_task_id = default_task_id
+            adder_task_ids = [default_task_id]
         else:
-            adder_task_id = await get_latest_active_participant_task_id(db, user_id=adder.id)
+            adder_task_ids = await list_active_participant_task_ids(db, user_id=adder.id)
 
         created_counts: dict[tuple[int, int], int] = {}
 
@@ -46,10 +46,7 @@ async def track_group_invites(message: Message) -> None:
             if member.is_bot:
                 continue
 
-            inviter = adder
-            resolved_task_id = adder_task_id
-
-            if not resolved_task_id:
+            if not adder_task_ids:
                 continue
 
             invited = await get_or_create_user(
@@ -58,20 +55,21 @@ async def track_group_invites(message: Message) -> None:
                 full_name=member.full_name,
                 username=member.username,
             )
-            referral = await register_referral(
-                db,
-                task_id=resolved_task_id,
-                inviter_user_id=inviter.id,
-                invited_user_id=invited.id,
-                source_code="group_add",
-            )
-            if not referral:
-                continue
+            for resolved_task_id in adder_task_ids:
+                referral = await register_referral(
+                    db,
+                    task_id=resolved_task_id,
+                    inviter_user_id=adder.id,
+                    invited_user_id=invited.id,
+                    source_code="group_add",
+                )
+                if not referral:
+                    continue
 
-            referral.status = ReferralStatus.COUNTED.value
-            referral.counted_at = datetime.utcnow()
-            key = (inviter.id, resolved_task_id)
-            created_counts[key] = created_counts.get(key, 0) + 1
+                referral.status = ReferralStatus.COUNTED.value
+                referral.counted_at = datetime.utcnow()
+                key = (adder.id, resolved_task_id)
+                created_counts[key] = created_counts.get(key, 0) + 1
 
         for (inviter_id, task_id), count in created_counts.items():
             inviter = await db.get(User, inviter_id)
