@@ -20,8 +20,11 @@ PERSONAL_INVITE_RE = re.compile(r"^tp:t(?P<task_id>\d+):u(?P<user_id>\d+)$")
 
 @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), F.new_chat_members)
 async def track_group_invites(message: Message) -> None:
-    if settings.target_group_id and message.chat.id != settings.target_group_id:
-        return
+    if settings.target_group_id:
+        configured_id = int(settings.target_group_id)
+        allowed_ids = {configured_id, abs(configured_id), -abs(configured_id)}
+        if message.chat.id not in allowed_ids:
+            return
 
     if not message.from_user or not message.new_chat_members:
         return
